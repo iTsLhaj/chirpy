@@ -69,6 +69,11 @@ func (apic *apiConfig) resetFileServerHits() http.Handler {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
+		err = apic.dbQuery.DeleteAllChirps(r.Context())
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
 		apic.fileServerHits.And(0)
 		w.Header().Set("Server", "Kahya 1.0")
 		w.WriteHeader(http.StatusOK)
@@ -189,17 +194,26 @@ func (apic *apiConfig) handleUserCreation() http.Handler {
 func (apic *apiConfig) handleChirps() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		type reqJSON struct {
-			body    string    `json:"body"`
-			user_id uuid.UUID `json:"user_id"`
+			Body   string `json:"body"`
+			UserId string `json:"user_id"`
 		}
 
 		type errResp struct {
 			Error string `json:"error"`
 		}
 
+		type resChirp struct {
+			Id        uuid.UUID `json:"id"`
+			CreatedAt time.Time `json:"created_at"`
+			UpdatedAt time.Time `json:"updated_at"`
+			Body      string    `json:"body"`
+			UserID    uuid.UUID `json:"user_id"`
+		}
+
 		rbody, err := ioutil.ReadAll(r.Body)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
+			fmt.Println(err.Error())
 			data, _ := json.Marshal(errResp{"Something went wrong"})
 			w.Write(data)
 			return
@@ -209,26 +223,38 @@ func (apic *apiConfig) handleChirps() http.Handler {
 		err = json.Unmarshal(rbody, &reqPostData)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
+			fmt.Println(err.Error())
 			data, _ := json.Marshal(errResp{"Something went wrong"})
 			w.Write(data)
 			return
 		}
 
-		if len(reqPostData.body) > 140 {
+		var parsedUID uuid.UUID
+		parsedUID, err = uuid.Parse(reqPostData.UserId)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			fmt.Println(err.Error())
+			data, _ := json.Marshal(errResp{"Something went wrong"})
+			w.Write(data)
+			return
+		}
+
+		if len(reqPostData.Body) > 140 {
 			w.WriteHeader(http.StatusBadRequest)
 			data, _ := json.Marshal(errResp{"Chirp is too long"})
 			w.Write(data)
 			return
 		}
 
-		var cleaned []byte = []byte(reqPostData.body)
+		var cleaned []byte = []byte(reqPostData.Body)
 		re, _ := regexp.Compile(`(?i)\bFornax|Kerfuffle|Sharbert\b`)
 		cleaned = re.ReplaceAll([]byte(cleaned), []byte("****"))
 
 		var dbUser database.User
-		dbUser, err = apic.dbQuery.GetUserByID(r.Context(), reqPostData.user_id)
+		dbUser, err = apic.dbQuery.GetUserByID(r.Context(), parsedUID)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
+			fmt.Println(err.Error())
 			data, _ := json.Marshal(errResp{"Something went wrong"})
 			w.Write(data)
 			return
@@ -241,15 +267,120 @@ func (apic *apiConfig) handleChirps() http.Handler {
 		})
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
+			fmt.Println(err.Error())
 			data, _ := json.Marshal(errResp{"Something went wrong"})
 			w.Write(data)
 			return
 		}
 
+		var respChirp resChirp
+		respChirp.Id = chirp.ID
+		respChirp.CreatedAt = chirp.CreatedAt
+		respChirp.UpdatedAt = chirp.UpdatedAt
+		respChirp.Body = chirp.Body
+		respChirp.UserID = chirp.UserID
+
 		w.WriteHeader(http.StatusCreated)
-		data, _ := json.Marshal(chirp)
+		data, _ := json.Marshal(respChirp)
 		w.Write(data)
 		return
+	})
+}
+
+func (apic *apiConfig) getChirps() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		type errResp struct {
+			Error string `json:"error"`
+		}
+
+		type resChirp struct {
+			Id        uuid.UUID `json:"id"`
+			CreatedAt time.Time `json:"created_at"`
+			UpdatedAt time.Time `json:"updated_at"`
+			Body      string    `json:"body"`
+			UserID    uuid.UUID `json:"user_id"`
+		}
+
+		chirps, err := apic.dbQuery.GetAllChirps(r.Context())
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			data, _ := json.Marshal(errResp{"Something went wrong"})
+			w.Write(data)
+		}
+
+		var respChirps []resChirp
+		for _, chirp := range chirps {
+			respChirps = append(respChirps, resChirp{
+				Id:        chirp.ID,
+				CreatedAt: chirp.CreatedAt,
+				UpdatedAt: chirp.UpdatedAt,
+				Body:      chirp.Body,
+				UserID:    chirp.UserID,
+			})
+		}
+
+		var respBody []byte
+		respBody, err = json.Marshal(respChirps)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			data, _ := json.Marshal(errResp{"Something went wrong"})
+			w.Write(data)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write(respBody)
+	})
+}
+
+func (apic *apiConfig) getChirpById() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		type errResp struct {
+			Error string `json:"error"`
+		}
+
+		type resChirp struct {
+			Id        uuid.UUID `json:"id"`
+			CreatedAt time.Time `json:"created_at"`
+			UpdatedAt time.Time `json:"updated_at"`
+			Body      string    `json:"body"`
+			UserID    uuid.UUID `json:"user_id"`
+		}
+
+		chirpIDParam := r.PathValue("chirpID")
+		chirpID, err := uuid.Parse(chirpIDParam)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			data, _ := json.Marshal(errResp{"Something went wrong"})
+			w.Write(data)
+			return
+		}
+
+		var chirp database.Chirp
+		chirp, err = apic.dbQuery.GetChirpByID(r.Context(), chirpID)
+		if err != nil {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+
+		var respBody []byte
+		respBody, err = json.Marshal(resChirp{
+			Id:        chirp.ID,
+			CreatedAt: chirp.CreatedAt,
+			UpdatedAt: chirp.UpdatedAt,
+			Body:      chirp.Body,
+			UserID:    chirp.UserID,
+		})
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			data, _ := json.Marshal(errResp{"Something went wrong"})
+			w.Write(data)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write(respBody)
 	})
 }
 
@@ -295,6 +426,8 @@ func main() {
 	sm.Handle("POST /api/validate_chirp", apic.handleChirpValidation())
 	sm.Handle("POST /api/users", apic.handleUserCreation())
 	sm.Handle("POST /api/chirps", apic.handleChirps())
+	sm.Handle("GET /api/chirps", apic.getChirps())
+	sm.Handle("GET /api/chirps/{chirpID}", apic.getChirpById())
 
 	sm.Handle("GET /admin/metrics", apic.middlewareRouteProtection(apic.fetchFileServerHits()))
 	sm.Handle("POST /admin/reset", apic.middlewareRouteProtection(apic.resetFileServerHits()))

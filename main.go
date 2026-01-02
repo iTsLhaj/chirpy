@@ -186,6 +186,73 @@ func (apic *apiConfig) handleUserCreation() http.Handler {
 	})
 }
 
+func (apic *apiConfig) handleChirps() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		type reqJSON struct {
+			body    string    `json:"body"`
+			user_id uuid.UUID `json:"user_id"`
+		}
+
+		type errResp struct {
+			Error string `json:"error"`
+		}
+
+		rbody, err := ioutil.ReadAll(r.Body)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			data, _ := json.Marshal(errResp{"Something went wrong"})
+			w.Write(data)
+			return
+		}
+
+		var reqPostData reqJSON
+		err = json.Unmarshal(rbody, &reqPostData)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			data, _ := json.Marshal(errResp{"Something went wrong"})
+			w.Write(data)
+			return
+		}
+
+		if len(reqPostData.body) > 140 {
+			w.WriteHeader(http.StatusBadRequest)
+			data, _ := json.Marshal(errResp{"Chirp is too long"})
+			w.Write(data)
+			return
+		}
+
+		var cleaned []byte = []byte(reqPostData.body)
+		re, _ := regexp.Compile(`(?i)\bFornax|Kerfuffle|Sharbert\b`)
+		cleaned = re.ReplaceAll([]byte(cleaned), []byte("****"))
+
+		var dbUser database.User
+		dbUser, err = apic.dbQuery.GetUserByID(r.Context(), reqPostData.user_id)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			data, _ := json.Marshal(errResp{"Something went wrong"})
+			w.Write(data)
+			return
+		}
+
+		var chirp database.Chirp
+		chirp, err = apic.dbQuery.CreateChirp(r.Context(), database.CreateChirpParams{
+			Body:   string(cleaned),
+			UserID: dbUser.ID,
+		})
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			data, _ := json.Marshal(errResp{"Something went wrong"})
+			w.Write(data)
+			return
+		}
+
+		w.WriteHeader(http.StatusCreated)
+		data, _ := json.Marshal(chirp)
+		w.Write(data)
+		return
+	})
+}
+
 func loadDotEnv() {
 	err := godotenv.Load()
 	if err != nil {
@@ -227,6 +294,7 @@ func main() {
 	})
 	sm.Handle("POST /api/validate_chirp", apic.handleChirpValidation())
 	sm.Handle("POST /api/users", apic.handleUserCreation())
+	sm.Handle("POST /api/chirps", apic.handleChirps())
 
 	sm.Handle("GET /admin/metrics", apic.middlewareRouteProtection(apic.fetchFileServerHits()))
 	sm.Handle("POST /admin/reset", apic.middlewareRouteProtection(apic.resetFileServerHits()))
